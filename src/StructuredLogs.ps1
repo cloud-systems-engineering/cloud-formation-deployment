@@ -1,11 +1,14 @@
 [CmdletBinding(PositionalBinding=$false)]
 param(
-    [Parameter(Mandatory=$True)][String]$ApplicationName,
-    [Parameter(Mandatory=$False)][String]$LogLevel = "Info",
-    [Parameter(Mandatory=$False)][String]$LogLevel_Internal = "Debug"
+    [Parameter(Mandatory=$True, Position=0)][Hashtable]$Args
 )
 
-Set-Variable -Scope Script -Name "LogReportingLevel_Internal" -Value "$LogLevel_Internal"
+
+    
+$ApplicationName = $Args.ApplicationName
+
+
+Set-Variable -Scope Script -Name "LogReportingLevel_Internal" -Value $Args.LogLevel_Internal
 
 # Valid Log Levels
 enum LogLevel {
@@ -297,6 +300,19 @@ function LOG {
     }            
 }
 
+function REGISTER_LOG {
+    [CmdletBinding(PositionalBinding=$true)]
+    param(
+        [Parameter(Position = 0)][string]$LogRef,
+        [Parameter(Position = 1)][LogLevel]$LogLevel,
+        [Parameter(Position = 2)][string]$MessageFormat,
+        [Parameter(Position = 3)][int]$ArgCount
+    )
+    PROCESS {
+        [LogMessageRegister]::Add($LogRef, $LogLevel, $MessageFormat, $ArgCount)        
+    }
+}
+
 
 #  Initialize Logging
 try {
@@ -304,7 +320,7 @@ try {
     #
     #   Phase 1 - Set the log level for log messages.
     #
-    SetLogLevel -LogLevel $LogRef
+    SetLogLevel -LogLevel $Args.LogLevel
 
 
     #
@@ -318,7 +334,7 @@ try {
     #  Phase 3 - Record that logging has been enabled.
     #
 
-    LOG "LOG001" $ApplicationName
+    LOG "LOG001" $Args.ApplicationName
 }
 catch {
     Write-Host $_

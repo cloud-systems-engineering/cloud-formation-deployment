@@ -326,30 +326,3 @@ function Write-CommandTrace {
 
     }
 }
-
-
-# function Test-World {
-#     [CmdletBinding(PositionalBinding=$false)]
-#     param()
-#     BEGIN {
-
-#     }
-#     PROCESS {
-#         # $Output = Invoke-SystemCommand -Cmd "whereis" -CmdArgs @('-b', 'aws')
-#         # $Output = Invoke-SystemCommand -Cmd $AWS_CLI_PATH -CmdArgs @('s3', 'ls', '--profile', 'pct-ct')
-        
-#         Trace-SystemCommand -Cmd $AWS_CLI_PATH -CmdArgs @('sso', 'login', '--profile', 'pct-ct') | Write-CommandTrace
-#         # $ExitCode = $Output.ExitCode
-
-#         # Write-Host "Results"
-#         # Write-Host "Exit Code: ${ExitCode}"
-#         # Write-Host $Output.StdOut
-
-#     }
-#     END {
-
-#     }
-# }
-
-
-# Test-World
