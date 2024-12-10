@@ -4,5 +4,9 @@ global_flags:
 
 stacks:
   - name: 'vpc'
+    state_data:
+      - key: "AWS::EC2::VPC"
+        value: [ "*" ]
+      
 
 

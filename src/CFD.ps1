@@ -96,7 +96,8 @@ function Invoke-CFD {
             
             $Data.Stacks | ForEach-Object {
                 $StackName = $_.Name
-                Deploy-Stack -StackName $StackName -TemplateFile "file://examples/cf/${StackName}.yaml" -AwsRegion 'ap-southeast-2' -AwsProfile 'pct-cdf2-sandbox'
+                $StateData = $_.state_data
+                Deploy-Stack -StackName $StackName -TemplateFile "file://examples/cf/${StackName}.yaml" -StatefulResources $StateData -AwsRegion 'ap-southeast-2' -AwsProfile 'pct-cdf2-sandbox'
             }
         } catch [AwsSsoTokenExpired] {
             LOG 'CFD901'

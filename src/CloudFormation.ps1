@@ -40,6 +40,12 @@ class AwsException : Exception {
     }
 }
 
+class AwsChangeSetNoChanges : AwsException {
+    AwsChangeSetNoChanges() : base("None", "CreateChangeSet", "There are no changes in the CloudFormation Template") {
+
+    }
+}
+
 class AwsSsoTokenExpired : AwsException {
     AwsSsoTokenExpired() : base("None", "Authentication", "AWS SSO Authentication Expired") {
 
@@ -236,10 +242,11 @@ function Invoke-CreateChangeSet {
             'cloudformation', 'create-change-set', 
             '--stack-name', "${StackName}",
             '--change-set-name', "${ChangeSetName}",
-            '--template-body', "${TemplateFile}"
+            '--template-body', "${TemplateFile}",
             '--region', "${AwsRegion}",
-            '--profile', "${AwsProfile}"
-        )
+            '--profile', "${AwsProfile}",
+            '--output', 'yaml'
+            )
 
         Write-Host $Output
 
@@ -256,7 +263,6 @@ function Invoke-ApplyChangeSet {
     param(
         [String]$StackName,
         [String]$ChangeSetName,
-        [String]$TemplateFile,
         [String]$AwsRegion,
         [String]$AwsProfile
     )
@@ -265,10 +271,9 @@ function Invoke-ApplyChangeSet {
     }
     PROCESS {
         $Output = Invoke-SystemCommand -Cmd $AWS_CLI_PATH -CmdArgs @(
-            'cloudformation', 'apply-change-set', 
+            'cloudformation', 'execute-change-set', 
             '--stack-name', "${StackName}",
             '--change-set-name', "${ChangeSetName}",
-            '--template-body', "${TemplateFile}"
             '--region', "${AwsRegion}",
             '--profile', "${AwsProfile}"
         )
@@ -330,10 +335,9 @@ function Invoke-DescribeChangeSet {
     }
     PROCESS {
         $CmdArgs = @(
-            'cloudformation', '--describe-change-set', 
-            '--stack-name', "${StackName}",
+            'cloudformation', 'describe-change-set', 
             '--change-set-name', "${ChangeSetName}",
-            '--template-body', "${TemplateFile}"
+            '--stack-name', "${StackName}"
         )
         if ($PagingToken -ne $null) {
             $CmdArgs += @(
@@ -343,14 +347,17 @@ function Invoke-DescribeChangeSet {
 
         $CmdArgs += @(
             '--region', "${AwsRegion}",
-            '--profile', "${AwsProfile}"
+            '--profile', "${AwsProfile}",
+            '--output', 'yaml'
         )
 
         $Output = Invoke-SystemCommand -Cmd $AWS_CLI_PATH -CmdArgs $CmdArgs
-
-        Write-Host $Output
-
-
+        if ($Output.ExitCode -ne 0) {
+            New-ErrorException $Output.StdErr
+        }
+        Write-Host $Output.StdOut
+        $Data = ConvertFrom-Yaml $Output.StdOut
+        Write-Output $Data
     }
     END {
 
@@ -361,6 +368,129 @@ function Wait-ForAnyPendingStackSetChangeToComplete {
 
 }
 
+
+function Get-ChangeSet-Details {
+    [CmdletBinding(PositionalBinding=$false)]
+    param(
+        [String]$StackName,
+        [String]$ChangeSetName,
+        [String]$TemplateFile,
+        [String]$AwsRegion,
+        [String]$AwsProfile
+    )
+    BEGIN {
+
+    }
+    PROCESS {
+        $PagingToken=$null
+
+        $Output = Invoke-DescribeChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -TemplateFile `
+            $TemplateFile -AwsRegion $AwsRegion -AwsProfile $AwsProfile -PagingToken $PagingToken
+
+        While (!(Test-ChangeSetInProgress -ChangeSetStatus $Output.Status)) {
+            Start-Sleep -Seconds 1
+            $Output = Invoke-DescribeChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -TemplateFile `
+                $TemplateFile -AwsRegion $AwsRegion -AwsProfile $AwsProfile -PagingToken $PagingToken
+        }
+        # Are there any changes that need applying?
+        if ($Output.Status -eq "FAILED" -and $Output.StatusReason -eq "The submitted information didn't contain changes. Submit different information to create a change set.") {
+            throw [AwsChangeSetNoChanges]::new()
+        }
+
+        $Output['Changes'] | ForEach-Object {
+            if ($_['Type'] -eq 'Resource') {
+                $Output = [PSCustomObject]$_['ResourceChange']
+                $Output | Write-Output
+            }
+        } | Write-Output
+    }
+    END {
+
+    } 
+}
+
+function Select-StatefullResources {
+    [CmdletBinding(PositionalBinding=$false)]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$Action,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$Replacement,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$LogicalResourceId,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$PhysicalResourceId,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$ResourceType,
+        [StateResource[]]$StatefulResources = $Null
+    )
+    BEGIN {
+
+
+    }
+    PROCESS {
+        #  Find the  stateful resource that matched this CF change
+        $StatefulResource = $StatefulResources | Where-Object key -EQ $ResourceType
+        if ($Null -eq $StatefulResource) {
+            return
+        }
+
+        $LogicalResources = $StatefulResource.value
+            
+        if ($LogicalResources -contains "*" -or $LogicalResources -contains $LogicalResourceId) {
+            [PSCustomObject]@{
+                Action = $Action
+                Replacement = $Replacement
+                LogicalResourceId = $LogicalResourceId
+                PhysicalResourceId = $PhysicalResourceId
+                ResourceType = $ResourceType
+            } | Write-Output
+        }
+    }
+    END {
+
+    }
+}
+
+function Select-DestroyedResources{
+    [CmdletBinding(PositionalBinding=$false)]
+    param(
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$Action,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$Replacement,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$LogicalResourceId,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$PhysicalResourceId,
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
+        [String]$ResourceType
+    )
+    BEGIN {
+
+    }
+    PROCESS {
+        $Destroy = $False
+        if ($Action -eq "Destroy") {
+            $Destroy = $True
+        } elseif ($Replacement -eq "True") {
+            $Destroy = $True
+        }
+
+        if ($Destroy -eq $True)
+        {
+            [PSCustomObject]@{
+                LogicalResourceId = $LogicalResourceId
+                PhysicalResourceId = $PhysicalResourceId
+                ResourceType = $ResourceType
+            } | Write-Output
+        }
+    }
+    END {
+
+    }
+
+}
 
 # Get-StackStatus
 function Get-StackStatus {
@@ -435,6 +565,23 @@ function Test-StackChanging {
     }
 }
 
+function Test-ChangeSetInProgress {
+    [CmdletBinding(PositionalBinding=$false)]
+    param(
+        [String]$ChangeSetStatus
+    )
+    PROCESS {
+        $Status = $false
+        if (@('CREATE_COMPLETE', 'FAILED') -contains $ChangeSetStatus)
+        {
+            $Status = $true
+        }
+        LOG "CFT001" "$StackStatus" "$Status"
+        $Status | Write-Output
+    }
+}
+
+
 function Wait-ForAnyPendingStackChangeToComplete {
     [CmdletBinding(PositionalBinding=$false)]
     param(
@@ -472,6 +619,7 @@ function Deploy-Stack {
     param(
         [String]$StackName,
         [String]$TemplateFile,
+        [StateResource[]]$StatefulResources,
         [String]$AwsRegion,
         [String]$AwsProfile
     )
@@ -483,7 +631,8 @@ function Deploy-Stack {
 
         If(Test-StackExists -StackStatus $StackStatus) {
             # Update
-            $Result = Invoke-UpdateStack -StackName "${StackName}" -AwsRegion "${AwsRegion}" -AwsProfile "${AwsProfile}" -TemplateFile "${TemplateFile}"
+            $Result = Update-StackUsingChangeSets -StackName "${StackName}" -AwsRegion "${AwsRegion}" -AwsProfile "${AwsProfile}" -TemplateFile "${TemplateFile}" -StatefulResources $StatefulResources
+
         } else {
             if ($StackStatus -ne "NoStack") {
                 # Delete
@@ -549,6 +698,7 @@ function Update-StackUsingChangeSets {
     param(
         [String]$StackName,
         [String]$TemplateFile,
+        [StateResource[]]$StatefulResources,
         [String]$AwsRegion,
         [String]$AwsProfile
     )
@@ -561,22 +711,32 @@ function Update-StackUsingChangeSets {
         # A changeset needs a unique ID.  We ensure uniqueness by using a GUID.
         $ChangeSetName = "{0}-{1}" -f $StackName, (New-Guid)
 
+        try {
+            #  Trigger Create-StackSet.
+            Invoke-CreateChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -TemplateFile $TemplateFile -AwsRegion $AwsRegion -AwsProfile $AwsProfile
 
-        #  Trigger Create-StackSet.
-        Invoke-CreateChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -TemplateFile $TemplateFile -AwsRegion $AwsRegion -AwsProfile $AwsProfile
+            #  Review StackSet contents
+            $BlockingResources = Get-ChangeSet-Details -StackName $StackName -ChangeSetName $ChangeSetName `
+                -AwsRegion $AwsRegion -AwsProfile $AwsProfile `
+                | Select-StatefullResources -StatefulResources $StatefulResources `
+                #| Select-StatefullResources `
+                | Select-DestroyedResources
 
-        #  Review StackSet contents
-        $ BlockingResources = Get-ChangeSet-Details | Select-StatefullResources
+            
 
-        #  Apply StackSet
-        Invoke-CreateChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
+            #  Apply StackSet
+            Invoke-ApplyChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
 
-        #  Wait for StackSet to be applied
-        Wait-ForAnyPendingStackChangeToComplete -StackName $StackName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
+            #  Wait for StackSet to be applied
+            Wait-ForAnyPendingStackChangeToComplete -StackName $StackName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
+        }
+        catch [AwsChangeSetNoChanges] {
 
-        #  Delete ChangeSet
-        Invoke-DeleteChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
-
+        }
+        finally {
+            #  Delete ChangeSet
+            Invoke-DeleteChangeSet -StackName $StackName -ChangeSetName $ChangeSetName -AwsRegion $AwsRegion -AwsProfile $AwsProfile
+        }
     }
     END {
 

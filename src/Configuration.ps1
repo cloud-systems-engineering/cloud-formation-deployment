@@ -85,7 +85,8 @@ class Event {
 
 #  Resource names that contain state data, so should not be allowed to be deleted during a change event.
 class StateResource {
-
+    [string]$key
+    [string[]]$value
 }
 
 class Stack {
